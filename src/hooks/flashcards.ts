@@ -84,63 +84,38 @@ export function useFlashcard(slug?: string) {
   };
 
   const update = async (data: Partial<Flashcard>) => {
-    const scope = Sentry.getCurrentHub().getScope();
-    const transaction = Sentry.startTransaction({
-      name: "Updating flashcard",
+    return Sentry.startSpan({ name: "Updating flashcard" }, () => {
+      Sentry.startInactiveSpan({ op: "mark", name: "=== Making the API request ===" }).end();
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+  
+      const res = await fetch(`/api/flashcards/${slug}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(data),
+      });
+
+      if (res.ok) {
+        const mutatingCacheSpan = transaction.startChild({
+          op: "cache",
+          description: "Mutating SWR cache",
+        });
+  
+        Sentry.startSpan({ op: "cache", name: "Mutating SWR cache" }, async () => {
+          await mutate(`/api/flashcards/${slug}`);
+          await mutate("/api/flashcards");
+        });
+  
+        const data = await Sentry.startSpan({ op: "serialize", name: "Serializing response" }, async () => {
+            return await res.json();
+        });
+        return data;
+      } else {
+        throw new Error(`Failed to update flashcard. Reason: ${res.statusText}`);
+      }
     });
-    scope?.setSpan(transaction);
-
-    transaction
-      .startChild({
-        op: "mark",
-        description: "=== Making the API request ===",
-      })
-      .finish();
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-
-    if (transaction) {
-      headers["sentry-trace"] = transaction.toTraceparent();
-    }
-
-    const res = await fetch(`/api/flashcards/${slug}`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify(data),
-    });
-
-    if (res.ok) {
-      const mutatingCacheSpan = transaction.startChild({
-        op: "cache",
-        description: "Mutating SWR cache",
-      });
-      await mutate(`/api/flashcards/${slug}`);
-      await mutate("/api/flashcards");
-      mutatingCacheSpan.finish();
-
-      const serializeSpan = transaction.startChild({
-        op: "serialize",
-        description: "Serializing response",
-      });
-
-      const data = await res.json();
-
-      serializeSpan.finish();
-      transaction.finish();
-
-      return data;
-    } else {
-      const errorSpan = transaction.startChild({
-        op: "mark",
-        description: `Failed to update flashcard. Reason: ${res.statusText}`,
-      });
-      errorSpan.finish();
-      transaction.finish();
-
-      throw new Error(`Failed to update flashcard. Reason: ${res.statusText}`);
-    }
   };
 
   return {
